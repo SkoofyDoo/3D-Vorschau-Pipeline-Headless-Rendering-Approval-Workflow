@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<meta charset="utf-8" />
+<title>SSE Inline Viewer</title>
+
+<meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self';
+               img-src 'self' data: blob:;
+               connect-src 'self';
+               script-src 'self' 'unsafe-inline'"
+/>
+
+<style>
+    body {
+        font-family: ui-sans-serif, system-ui;
+        margin: 16px;
+    }
+    #grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(256px, 1fr));
+        gap: 12px;
+    }
+    .item {
+        background: #111;
+        border-radius: 8px;
+        padding: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .item img {
+        width: 100%;
+        aspect-ratio: 1 / 1;
+        object-fit: contain;
+    }
+</style>
+
+<h1>SSE Inline Frames</h1>
+<div class="log" id="log">waiting…</div>
+<div id="grid"></div>
+
+<script>
+    const log = (m) => (document.getElementById('log').textContent = m);
+
+    const es = new EventSource(
+        '/preview-model-sse?local=1&size=512&format=png&inline=1'
+    );
+    const grid = document.getElementById('grid');
+
+    es.addEventListener('open', () => log('SSE connected'));
+    es.addEventListener('meta', (ev) => {
+        const meta = JSON.parse(ev.data);
+        console.log('[meta]', meta);
+        log(`SSE connected • mode=${meta.mode} • inline=${meta.inline}`);
+    });
+
+    let count = 0;
+    es.addEventListener('frame', (ev) => {
+        const { dataUrl, url } = JSON.parse(ev.data);
+        const src = dataUrl || url;
+        if (!src) return;
+        const img = new Image();
+        img.src = src;
+        grid.appendChild(img);
+        count++;
+        log(`frames: ${count}`);
+    });
+
+    es.addEventListener('done', () => {
+        log(`done • frames=${count}`);
+        es.close();
+    });
+    es.addEventListener('error', (e) => {
+        console.error('SSE error', e);
+        log('SSE error');
+        es.close();
+    });
+</script>
