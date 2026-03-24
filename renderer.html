@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Headless Renderer • Textured + Simple WireframeGeometry</title>
+        <script type="importmap">
+            {
+                "imports": {
+                    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+                }
+            }
+        </script>
+    </head>
+    <body>
+        <script type="module">
+            import * as THREE from 'three';
+            import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+
+            // Erstellt einen WebGL2-Renderer auf einem offscreen-Canvas,
+            // fixiert Auflösung/Pixeldichte und legt Farbraum/Tonemapping fest.
+            function makeRenderer(width, height) {
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                document.body.appendChild(canvas);
+
+                // WebGL2-Kontext mit Antialiasing und Buffer-Persistenz (für toDataURL)
+                const gl2 = canvas.getContext('webgl2', {
+                    antialias: true,
+                    preserveDrawingBuffer: true,
+                });
+                const renderer = new THREE.WebGLRenderer({
+                    canvas,
+                    context: gl2,
+                    antialias: true,
+                    preserveDrawingBuffer: true,
+                });
+                renderer.setSize(width, height);
+                renderer.setPixelRatio(1);
+                renderer.outputColorSpace = THREE.SRGBColorSpace;
+                renderer.toneMapping = THREE.NoToneMapping;
+                renderer.setClearColor(0xffffff, 1);
+                return renderer;
+            }
+
+            function snap(renderer, format = 'png', quality = 0.9) {
+                const mime = format === 'jpeg' ? 'image/jpeg' : 'image/png';
+                return renderer.domElement.toDataURL(mime, quality);
+            }
+
+            async function loadModelData(objUrl, pngUrl) {
+                const root = await new OBJLoader().loadAsync(objUrl);
+
+                const baseMat = new THREE.MeshStandardMaterial({
+                    color: 0x7a7a7a,
+                    metalness: 0.1,
+                    roughness: 0.85,
+                });
+
+                root.traverse((c) => {
+                    if (!c.isMesh) return;
+                    if (!c.material) c.material = baseMat.clone();
+                });
+
+                if (pngUrl) {
+                    try {
+                        const tex = await new THREE.TextureLoader().loadAsync(
+                            pngUrl
+                        );
+                        tex.colorSpace = THREE.SRGBColorSpace;
+                        root.traverse((m) => {
+                            if (!m.isMesh) return;
+                            const mats = Array.isArray(m.material)
+                                ? m.material
+                                : [m.material];
+                            for (const mat of mats) {
+                                if (mat && !mat.map) mat.map = tex;
+                            }
+                        });
+                    } catch (e) {
+                        console.warn('Texture load failed:', pngUrl);
+                    }
+                }
+                return root;
+            }
+
+            function fitAndCenter(obj, targetSize = 6.5, offsetY = 0.0) {
+                let box = new THREE.Box3().setFromObject(obj);
+                const size = box.getSize(new THREE.Vector3());
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const scale = maxDim > 0 ? targetSize / maxDim : 1;
+                obj.scale.setScalar(scale);
+
+                box = new THREE.Box3().setFromObject(obj);
+                const center2 = box.getCenter(new THREE.Vector3());
+
+                obj.position.set(-center2.x, obj.position.y, -center2.z);
+                obj.position.y -= box.min.y;
+                obj.position.y += offsetY;
+                return { box };
+            }
+
+            function ensureWireframeLines(root, { color = 0x111111 } = {}) {
+                root.traverse((child) => {
+                    if (!child.isMesh) return;
+                    if (child.userData.__wireLines) return;
+
+                    const wfGeo = new THREE.WireframeGeometry(child.geometry);
+                    const line = new THREE.LineSegments(
+                        wfGeo,
+                        new THREE.LineBasicMaterial({
+                            color,
+                            depthTest: true,
+                            depthWrite: false,
+                        })
+                    );
+
+                    child.parent.add(line);
+                    line.position.copy(child.position);
+                    line.quaternion.copy(child.quaternion);
+                    line.scale.copy(child.scale);
+                    line.visible = false;
+
+                    child.userData.__wireLines = line;
+                });
+            }
+
+            // Only Lines or Only Meshes
+            function setWireLinesMode(root, enabled) {
+                root.traverse((child) => {
+                    if (!child.isMesh) return;
+                    const line = child.userData.__wireLines;
+                    if (!line) return;
+
+                    if (enabled) {
+                        child.visible = false;
+                        line.visible = true;
+                    } else {
+                        child.visible = true;
+                        line.visible = false;
+                    }
+                });
+            }
+
+            async function renderPreviews({
+                modelUrl,
+                textureUrl,
+                size = 768,
+                fov = 35,
+                format = 'png',
+                quality = 0.9,
+                wireColor = 0x111111,
+            }) {
+                const width = size,
+                    height = size;
+                const renderer = makeRenderer(width, height);
+                const scene = new THREE.Scene();
+                const camera = new THREE.PerspectiveCamera(
+                    fov,
+                    width / height,
+                    0.1,
+                    2000
+                );
+                camera.up.set(0, 1, 0);
+
+                // Lights
+                const hemi = new THREE.HemisphereLight(0xffffff, 0x404040, 0.9);
+                const key = new THREE.DirectionalLight(0xffffff, 1.0);
+                key.position.set(2, 3, 4);
+                scene.add(hemi, key);
+
+                const model = await loadModelData(modelUrl, textureUrl);
+                fitAndCenter(model, 6.5, 0.0);
+                scene.add(model);
+
+                // WIREFRAME LINES
+                ensureWireframeLines(model, { color: wireColor });
+
+                // TEXTURED
+                setWireLinesMode(model, false);
+                renderer.render(scene, camera);
+                await new Promise(requestAnimationFrame);
+
+                const box = new THREE.Box3().setFromObject(model);
+                const center = box.getCenter(new THREE.Vector3());
+                const span = Math.max(
+                    ...box.getSize(new THREE.Vector3()).toArray()
+                );
+                const halfFov = THREE.MathUtils.degToRad(fov * 0.5);
+                const dist = (span * 0.6) / Math.tan(halfFov);
+
+                const faces = [
+                    { name: 'px', dir: new THREE.Vector3(1, 0, 0) },
+                    { name: 'nx', dir: new THREE.Vector3(-1, 0, 0) },
+                    { name: 'py', dir: new THREE.Vector3(0, 1, 0) },
+                    { name: 'ny', dir: new THREE.Vector3(0, -1, 0) },
+                    { name: 'pz', dir: new THREE.Vector3(0, 0, 1) },
+                    { name: 'nz', dir: new THREE.Vector3(0, 0, -1) },
+                ];
+
+                const results = [];
+
+                for (const face of faces) {
+                    camera.position.copy(
+                        face.dir.clone().multiplyScalar(dist).add(center)
+                    );
+                    camera.lookAt(center);
+                    renderer.render(scene, camera);
+                    await new Promise(requestAnimationFrame);
+                    results.push({
+                        name: `${face.name}.${
+                            format === 'png' ? 'png' : 'jpg'
+                        }`,
+                        dataUrl: snap(renderer, format, quality),
+                    });
+                }
+
+                // WIREFRAME
+                setWireLinesMode(model, true);
+                for (const face of faces) {
+                    camera.position.copy(
+                        face.dir.clone().multiplyScalar(dist).add(center)
+                    );
+                    camera.lookAt(center);
+                    renderer.render(scene, camera);
+                    await new Promise(requestAnimationFrame);
+                    results.push({
+                        name: `${face.name}_wf.${
+                            format === 'png' ? 'png' : 'jpg'
+                        }`,
+                        dataUrl: snap(renderer, format, quality),
+                    });
+                }
+                setWireLinesMode(model, false);
+
+                return results;
+            }
+
+            async function renderPreviewsStream(
+                {
+                    modelUrl,
+                    textureUrl,
+                    size = 768,
+                    fov = 35,
+                    format = 'png',
+                    quality = 0.9,
+                    wireColor = 0x111111,
+                },
+                cbName
+            ) {
+                const cb = window[cbName];
+                if (typeof cb !== 'function')
+                    throw new Error('Callback not found: ' + cbName);
+                const frames = await renderPreviews({
+                    modelUrl,
+                    textureUrl,
+                    size,
+                    fov,
+                    format,
+                    quality,
+                    wireColor,
+                });
+                for (const f of frames)
+                    await cb({ name: f.name, dataUrl: f.dataUrl });
+                return frames.length;
+            }
+
+            // API
+            window.renderPreviews = (opts) => renderPreviews(opts);
+            window.renderPreviewsStream = (opts, cbName) =>
+                renderPreviewsStream(opts, cbName);
+            window.previewModel = (opts) => renderPreviews(opts);
+
+            console.log(
+                'renderer ready: 12 frames (6 textured + 6 simple WireframeGeometry lines)'
+            );
+        </script>
+    </body>
+</html>
